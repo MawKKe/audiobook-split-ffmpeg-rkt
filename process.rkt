@@ -7,7 +7,7 @@
 
 (define-struct infile-meta (infile chapters))
 
-(define-struct outfile-opts (directory enum-offset))
+(define-struct options (directory enum-offset use-title-as-stem use-title-in-meta))
 
 (define (get-filename-extension infile)
   (path-get-extension infile))
@@ -19,21 +19,25 @@
 (define (make-ffprobe-args infile)
   (list "-i" infile "-v" "error" "-print_format" "json" "-show_chapters"))
 
-(define (make-ffmpeg-split-args meta ch outfile)
-  (flatten
-    (list
-      "-nostdin"
-      "-i" (infile-meta-infile meta)
-      "-v" "error"
-      "-map_chapters" "-1"
-      "-vn"
-      "-c" "copy"
-      "-ss" (chapter-start ch)
-      "-to" (chapter-end ch)
-      (track-num-meta (chapter-id ch) (length (infile-meta-chapters meta)))
-      (track-title-meta (chapter-title ch))
-      "-n"
-      outfile)))
+(define (make-ffmpeg-split-args meta opts)
+  (let*
+    ([get-outfile-name (make-outfile-name-formatter meta opts)]
+     [fn (lambda (ch)
+         (flatten
+           (list
+             "-nostdin"
+             "-i" (path->string (infile-meta-infile meta))
+             "-v" "error"
+             "-map_chapters" "-1"
+             "-vn"
+             "-c" "copy"
+             "-ss" (chapter-start ch)
+             "-to" (chapter-end ch)
+             (track-num-meta (chapter-id ch) (length (infile-meta-chapters meta)))
+             (track-title-meta (chapter-title ch))
+             "-n"
+             (path->string (get-outfile-name ch)))))])
+    (map fn (infile-meta-chapters meta))))
 
 (define (track-num-meta i total)
   (list "-metadata" (format "track=~a/~a" i total)))
@@ -73,7 +77,7 @@
 
 (define (read-infile infile)
   (let* ([chapters (ffprobe infile)])
-         (infile-meta infile chapters)))
+    (infile-meta infile chapters)))
 
 (define (format-chapter-num chnum num-total-chapters)
   (let ([width (inexact->exact (ceiling (log num-total-chapters 10)))])
@@ -101,32 +105,28 @@
 
 ;(define (make-command ch out))
 
-(define (make-outfile-name-formatter meta out-dir)
+(define (make-outfile-name-formatter meta opts)
   (let* ([num-chapters (length (infile-meta-chapters meta))]
          [in-stem (get-filename-stem (infile-meta-infile meta))]
          [in-ext  (get-filename-extension (infile-meta-infile meta))]
-         [choose-outfile-stem (make-outfile-stem-formatter in-stem #:force-override (not use-title-as-stem))])
+         [choose-outfile-stem (make-outfile-stem-formatter in-stem #:force-override (not (options-use-title-as-stem opts)))])
     (lambda (ch)
       (path-replace-extension
         (build-path
-            out-dir
-            (format "~a - ~a"
-                    (format-chapter-num (chapter-id ch) num-chapters)
-                    (choose-outfile-stem ch)))
+          (options-directory opts)
+          (format "~a - ~a"
+                  (format-chapter-num (chapter-id ch) num-chapters)
+                  (choose-outfile-stem ch)))
         in-ext))))
 
 (define test-file (build-path (current-directory) "testdata" "beep.m4a"))
 (define test-out-dir (build-path "_out"))
+(define opts (options test-out-dir 0 #f #t))
 
-(define (main in-file out-dir)
-    (let*
-      ([meta (read-infile in-file)]
-       [get-outfile-name (make-outfile-name-formatter meta out-dir)]
-       [build (lambda (ch) (make-ffmpeg-split-args
-                             meta
-                             ch
-                             (get-outfile-name ch)))])
-      (void (map (lambda (ch) (displayln (build ch))) (infile-meta-chapters meta)))))
-      ;(void (map (lambda (ch) (displayln (get-outfile-name ch))) (infile-meta-chapters meta)))))
+(define (main in-file opts)
+  (let*
+    ([meta (read-infile in-file)]
+     [cmds (make-ffmpeg-split-args meta opts)])
+    (void (map (lambda (c) (display (format "~v~%" c))) cmds))))
 
-(main test-file test-out-dir)
+(main test-file opts)
